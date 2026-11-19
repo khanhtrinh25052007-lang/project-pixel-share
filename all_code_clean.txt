@@ -1,0 +1,1442 @@
+﻿=== D:\wed photo sharing\project photo sharing\project photo sharing\App_Start\BundleConfig.cs ===
+using System.Web;
+using System.Web.Optimization;
+
+namespace project_photo_sharing
+{
+    public class BundleConfig
+    {
+        // For more information on bundling, visit https://go.microsoft.com/fwlink/?LinkId=301862
+        public static void RegisterBundles(BundleCollection bundles)
+        {
+            bundles.Add(new ScriptBundle("~/bundles/jquery").Include(
+                        "~/Scripts/jquery-{version}.js"));
+
+            bundles.Add(new ScriptBundle("~/bundles/jqueryval").Include(
+                        "~/Scripts/jquery.validate*"));
+
+            // Use the development version of Modernizr to develop with and learn from. Then, when you're
+            // ready for production, use the build tool at https://modernizr.com to pick only the tests you need.
+            bundles.Add(new ScriptBundle("~/bundles/modernizr").Include(
+                        "~/Scripts/modernizr-*"));
+
+            bundles.Add(new Bundle("~/bundles/bootstrap").Include(
+                      "~/Scripts/bootstrap.js"));
+
+            bundles.Add(new StyleBundle("~/Content/css").Include(
+                      "~/Content/bootstrap.css",
+                      "~/Content/site.css"));
+        }
+    }
+}
+
+=== D:\wed photo sharing\project photo sharing\project photo sharing\App_Start\FilterConfig.cs ===
+using System.Web;
+using System.Web.Mvc;
+
+namespace project_photo_sharing
+{
+    public class FilterConfig
+    {
+        public static void RegisterGlobalFilters(GlobalFilterCollection filters)
+        {
+            filters.Add(new HandleErrorAttribute());
+        }
+    }
+}
+
+=== D:\wed photo sharing\project photo sharing\project photo sharing\App_Start\RouteConfig.cs ===
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Web;
+using System.Web.Mvc;
+using System.Web.Routing;
+
+namespace project_photo_sharing
+{
+    public class RouteConfig
+    {
+        public static void RegisterRoutes(RouteCollection routes)
+        {
+            routes.IgnoreRoute("{resource}.axd/{*pathInfo}");
+
+            routes.MapRoute(
+                name: "Default",
+                url: "{controller}/{action}/{id}",
+                defaults: new { controller = "Home", action = "Index", id = UrlParameter.Optional }
+            );
+        }
+    }
+}
+
+=== D:\wed photo sharing\project photo sharing\project photo sharing\Controllers\AccountController.cs ===
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Web;
+using System.Web.Mvc;
+
+namespace project_photo_sharing.Controllers
+{
+    public class AccountController : Controller
+    {
+        // GET: Account
+        public ActionResult Index()
+        {
+            return View();
+        }
+        public ActionResult Logout()
+        {
+            Session.Clear(); // Xóa phiên đăng nhập
+            return RedirectToAction("Index", "Home"); // Trả về trang chủ (hoặc đổi thành "Login" nếu muốn)
+        }
+    }
+}
+=== D:\wed photo sharing\project photo sharing\project photo sharing\Controllers\HomeController.cs ===
+using project_photo_sharing.Models;
+using System;
+using System.Data.Entity;
+using System.IO;
+using System.Linq;
+using System.Web;
+using System.Web.Mvc;
+
+namespace project_photo_sharing.Controllers
+{
+    public class HomeController : Controller
+    {
+        private PhotoSharingDbContext db = new PhotoSharingDbContext();
+        private int CurrentUserId = 1; // Giả lập user đang đăng nhập (ban_cua_toi)
+
+        public ActionResult Index()
+        {
+            var posts = db.PhotoPosts
+                          .Include(p => p.Author)
+                          .Include(p => p.Comments.Select(c => c.User))
+                          .OrderByDescending(p => p.CreatedAt)
+                          .ToList();
+
+            var followedIds = db.Follows
+                                .Where(f => f.FollowerId == CurrentUserId)
+                                .Select(f => f.FollowingId)
+                                .ToList();
+
+            foreach (var post in posts)
+            {
+                post.IsFollowedByCurrentUser = followedIds.Contains(post.UserId);
+            }
+
+            return View(posts);
+        }
+
+        [HttpPost]
+        public ActionResult UploadPhoto(HttpPostedFileBase imageFile, string caption)
+        {
+            if (imageFile != null && imageFile.ContentLength > 0)
+            {
+                string uploadsFolder = Server.MapPath("~/Uploads");
+                if (!Directory.Exists(uploadsFolder))
+                {
+                    Directory.CreateDirectory(uploadsFolder);
+                }
+
+                string uniqueFileName = Guid.NewGuid().ToString() + Path.GetExtension(imageFile.FileName);
+                string filePath = Path.Combine(uploadsFolder, uniqueFileName);
+                imageFile.SaveAs(filePath);
+
+                var newPost = new PhotoPost
+                {
+                    UserId = CurrentUserId,
+                    ImageUrl = "/Uploads/" + uniqueFileName,
+                    Caption = caption ?? "",
+                    CreatedAt = DateTime.Now
+                };
+
+                db.PhotoPosts.Add(newPost);
+                db.SaveChanges();
+            }
+            return RedirectToAction("Index");
+        }
+
+        [HttpPost]
+        public ActionResult EditPost(int postId, string newCaption, HttpPostedFileBase newImageFile)
+        {
+            var post = db.PhotoPosts.Find(postId);
+            if (post == null || post.UserId != CurrentUserId)
+            {
+                return new HttpStatusCodeResult(403, "Bạn không có quyền sửa bài viết này!");
+            }
+
+            if (!string.IsNullOrWhiteSpace(newCaption))
+            {
+                post.Caption = newCaption.Trim();
+            }
+
+            if (newImageFile != null && newImageFile.ContentLength > 0)
+            {
+                if (post.ImageUrl.StartsWith("/Uploads/"))
+                {
+                    string oldPath = Server.MapPath("~" + post.ImageUrl);
+                    if (System.IO.File.Exists(oldPath))
+                    {
+                        System.IO.File.Delete(oldPath);
+                    }
+                }
+
+                string uniqueFileName = Guid.NewGuid().ToString() + Path.GetExtension(newImageFile.FileName);
+                string newPath = Path.Combine(Server.MapPath("~/Uploads"), uniqueFileName);
+                newImageFile.SaveAs(newPath);
+
+                post.ImageUrl = "/Uploads/" + uniqueFileName;
+            }
+
+            db.SaveChanges();
+            return RedirectToAction("Index");
+        }
+
+        [HttpPost]
+        public ActionResult DeletePost(int postId)
+        {
+            var post = db.PhotoPosts.Include(p => p.Comments).FirstOrDefault(p => p.PostId == postId);
+            if (post == null || post.UserId != CurrentUserId)
+            {
+                return new HttpStatusCodeResult(403, "Bạn không có quyền xóa!");
+            }
+
+            db.Comments.RemoveRange(post.Comments);
+
+            if (post.ImageUrl.StartsWith("/Uploads/"))
+            {
+                string physicalPath = Server.MapPath("~" + post.ImageUrl);
+                if (System.IO.File.Exists(physicalPath))
+                {
+                    System.IO.File.Delete(physicalPath);
+                }
+            }
+
+            db.PhotoPosts.Remove(post);
+            db.SaveChanges();
+
+            return RedirectToAction("Index");
+        }
+
+        [HttpPost]
+        public ActionResult AddComment(int postId, string content)
+        {
+            if (!string.IsNullOrWhiteSpace(content))
+            {
+                var cmt = new Comment
+                {
+                    PostId = postId,
+                    UserId = CurrentUserId,
+                    Content = content.Trim(),
+                    CreatedAt = DateTime.Now
+                };
+                db.Comments.Add(cmt);
+                db.SaveChanges();
+            }
+            return RedirectToAction("Index");
+        }
+
+        [HttpPost]
+        public ActionResult ToggleFollow(int targetUserId)
+        {
+            if (targetUserId != CurrentUserId)
+            {
+                var existingFollow = db.Follows.FirstOrDefault(f => f.FollowerId == CurrentUserId && f.FollowingId == targetUserId);
+                if (existingFollow != null)
+                {
+                    db.Follows.Remove(existingFollow);
+                }
+                else
+                {
+                    db.Follows.Add(new Follow
+                    {
+                        FollowerId = CurrentUserId,
+                        FollowingId = targetUserId,
+                        CreatedAt = DateTime.Now
+                    });
+                }
+                db.SaveChanges();
+            }
+            return RedirectToAction("Index");
+        }
+    }
+}
+=== D:\wed photo sharing\project photo sharing\project photo sharing\Models\Model1.Context.cs ===
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated from a template.
+//
+//     Manual changes to this file may cause unexpected behavior in your application.
+//     Manual changes to this file will be overwritten if the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+namespace project_photo_sharing.Models
+{
+    using System;
+    using System.Data.Entity;
+    using System.Data.Entity.Infrastructure;
+    
+    public partial class masterEntities : DbContext
+    {
+        public masterEntities()
+            : base("name=masterEntities")
+        {
+        }
+    
+        protected override void OnModelCreating(DbModelBuilder modelBuilder)
+        {
+            throw new UnintentionalCodeFirstException();
+        }
+    
+        public virtual DbSet<MSreplication_options> MSreplication_options { get; set; }
+        public virtual DbSet<spt_fallback_db> spt_fallback_db { get; set; }
+        public virtual DbSet<spt_fallback_dev> spt_fallback_dev { get; set; }
+        public virtual DbSet<spt_fallback_usg> spt_fallback_usg { get; set; }
+        public virtual DbSet<spt_monitor> spt_monitor { get; set; }
+    }
+}
+
+=== D:\wed photo sharing\project photo sharing\project photo sharing\Models\Model1.cs ===
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated from a template.
+//
+//     Manual changes to this file may cause unexpected behavior in your application.
+//     Manual changes to this file will be overwritten if the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+
+=== D:\wed photo sharing\project photo sharing\project photo sharing\Models\Model1.Designer.cs ===
+// T4 code generation is enabled for model 'D:\wed photo sharing\project photo sharing\project photo sharing\Models\Model1.edmx'. 
+// To enable legacy code generation, change the value of the 'Code Generation Strategy' designer
+// property to 'Legacy ObjectContext'. This property is available in the Properties Window when the model
+// is open in the designer.
+
+// If no context and entity classes have been generated, it may be because you created an empty model but
+// have not yet chosen which version of Entity Framework to use. To generate a context class and entity
+// classes for your model, open the model in the designer, right-click on the designer surface, and
+// select 'Update Model from Database...', 'Generate Database from Model...', or 'Add Code Generation
+// Item...'.
+=== D:\wed photo sharing\project photo sharing\project photo sharing\Models\MSreplication_options.cs ===
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated from a template.
+//
+//     Manual changes to this file may cause unexpected behavior in your application.
+//     Manual changes to this file will be overwritten if the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+namespace project_photo_sharing.Models
+{
+    using System;
+    using System.Collections.Generic;
+    
+    public partial class MSreplication_options
+    {
+        public string optname { get; set; }
+        public bool value { get; set; }
+        public int major_version { get; set; }
+        public int minor_version { get; set; }
+        public int revision { get; set; }
+        public int install_failures { get; set; }
+    }
+}
+
+=== D:\wed photo sharing\project photo sharing\project photo sharing\Models\PhotoPostModels.cs ===
+using System;
+using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
+using System.Data.Entity;
+
+namespace project_photo_sharing.Models
+{
+    [Table("Users")]
+    public class User
+    {
+        [Key]
+        public int UserId { get; set; }
+        public string Username { get; set; }
+        public string Email { get; set; }
+        public string PasswordHash { get; set; }
+        public string AvatarUrl { get; set; }
+        public DateTime CreatedAt { get; set; }
+    }
+
+    [Table("PhotoPosts")]
+    public class PhotoPost
+    {
+        [Key]
+        public int PostId { get; set; }
+        public int UserId { get; set; }
+        public string ImageUrl { get; set; }
+        public string Caption { get; set; }
+        public DateTime CreatedAt { get; set; }
+
+        [ForeignKey("UserId")]
+        public virtual User Author { get; set; }
+        public virtual ICollection<Comment> Comments { get; set; }
+
+        [NotMapped]
+        public bool IsFollowedByCurrentUser { get; set; }
+    }
+
+    [Table("Comments")]
+    public class Comment
+    {
+        [Key]
+        public int CommentId { get; set; }
+        public int PostId { get; set; }
+        public int UserId { get; set; }
+        public string Content { get; set; }
+        public DateTime CreatedAt { get; set; }
+
+        [ForeignKey("PostId")]
+        public virtual PhotoPost PhotoPost { get; set; }
+
+        [ForeignKey("UserId")]
+        public virtual User User { get; set; }
+    }
+
+    [Table("Follows")]
+    public class Follow
+    {
+        [Key]
+        public int FollowId { get; set; }
+        public int FollowerId { get; set; }
+        public int FollowingId { get; set; }
+        public DateTime CreatedAt { get; set; }
+    }
+
+    public class PhotoSharingDbContext : DbContext
+    {
+        public PhotoSharingDbContext() : base("name=PhotoSharingDbContext")
+        {
+            Database.SetInitializer<PhotoSharingDbContext>(null);
+        }
+
+        public DbSet<User> Users { get; set; }
+        public DbSet<PhotoPost> PhotoPosts { get; set; }
+        public DbSet<Comment> Comments { get; set; }
+        public DbSet<Follow> Follows { get; set; }
+    }
+}
+=== D:\wed photo sharing\project photo sharing\project photo sharing\Models\spt_fallback_db.cs ===
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated from a template.
+//
+//     Manual changes to this file may cause unexpected behavior in your application.
+//     Manual changes to this file will be overwritten if the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+namespace project_photo_sharing.Models
+{
+    using System;
+    using System.Collections.Generic;
+    
+    public partial class spt_fallback_db
+    {
+        public string xserver_name { get; set; }
+        public System.DateTime xdttm_ins { get; set; }
+        public System.DateTime xdttm_last_ins_upd { get; set; }
+        public Nullable<short> xfallback_dbid { get; set; }
+        public string name { get; set; }
+        public short dbid { get; set; }
+        public short status { get; set; }
+        public short version { get; set; }
+    }
+}
+
+=== D:\wed photo sharing\project photo sharing\project photo sharing\Models\spt_fallback_dev.cs ===
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated from a template.
+//
+//     Manual changes to this file may cause unexpected behavior in your application.
+//     Manual changes to this file will be overwritten if the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+namespace project_photo_sharing.Models
+{
+    using System;
+    using System.Collections.Generic;
+    
+    public partial class spt_fallback_dev
+    {
+        public string xserver_name { get; set; }
+        public System.DateTime xdttm_ins { get; set; }
+        public System.DateTime xdttm_last_ins_upd { get; set; }
+        public Nullable<int> xfallback_low { get; set; }
+        public string xfallback_drive { get; set; }
+        public int low { get; set; }
+        public int high { get; set; }
+        public short status { get; set; }
+        public string name { get; set; }
+        public string phyname { get; set; }
+    }
+}
+
+=== D:\wed photo sharing\project photo sharing\project photo sharing\Models\spt_fallback_usg.cs ===
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated from a template.
+//
+//     Manual changes to this file may cause unexpected behavior in your application.
+//     Manual changes to this file will be overwritten if the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+namespace project_photo_sharing.Models
+{
+    using System;
+    using System.Collections.Generic;
+    
+    public partial class spt_fallback_usg
+    {
+        public string xserver_name { get; set; }
+        public System.DateTime xdttm_ins { get; set; }
+        public System.DateTime xdttm_last_ins_upd { get; set; }
+        public Nullable<int> xfallback_vstart { get; set; }
+        public short dbid { get; set; }
+        public int segmap { get; set; }
+        public int lstart { get; set; }
+        public int sizepg { get; set; }
+        public int vstart { get; set; }
+    }
+}
+
+=== D:\wed photo sharing\project photo sharing\project photo sharing\Models\spt_monitor.cs ===
+//------------------------------------------------------------------------------
+// <auto-generated>
+//     This code was generated from a template.
+//
+//     Manual changes to this file may cause unexpected behavior in your application.
+//     Manual changes to this file will be overwritten if the code is regenerated.
+// </auto-generated>
+//------------------------------------------------------------------------------
+
+namespace project_photo_sharing.Models
+{
+    using System;
+    using System.Collections.Generic;
+    
+    public partial class spt_monitor
+    {
+        public System.DateTime lastrun { get; set; }
+        public int cpu_busy { get; set; }
+        public int io_busy { get; set; }
+        public int idle { get; set; }
+        public int pack_received { get; set; }
+        public int pack_sent { get; set; }
+        public int connections { get; set; }
+        public int pack_errors { get; set; }
+        public int total_read { get; set; }
+        public int total_write { get; set; }
+        public int total_errors { get; set; }
+    }
+}
+
+=== D:\wed photo sharing\project photo sharing\project photo sharing\Properties\AssemblyInfo.cs ===
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+// General Information about an assembly is controlled through the following
+// set of attributes. Change these attribute values to modify the information
+// associated with an assembly.
+[assembly: AssemblyTitle("project_photo_sharing")]
+[assembly: AssemblyDescription("")]
+[assembly: AssemblyConfiguration("")]
+[assembly: AssemblyCompany("")]
+[assembly: AssemblyProduct("project_photo_sharing")]
+[assembly: AssemblyCopyright("Copyright ©  2026")]
+[assembly: AssemblyTrademark("")]
+[assembly: AssemblyCulture("")]
+
+// Setting ComVisible to false makes the types in this assembly not visible
+// to COM components.  If you need to access a type in this assembly from
+// COM, set the ComVisible attribute to true on that type.
+[assembly: ComVisible(false)]
+
+// The following GUID is for the ID of the typelib if this project is exposed to COM
+[assembly: Guid("ec7a5ff4-4b09-48db-b23d-77028a870a69")]
+
+// Version information for an assembly consists of the following four values:
+//
+//      Major Version
+//      Minor Version
+//      Build Number
+//      Revision
+//
+// You can specify all the values or you can default the Revision and Build Numbers
+// by using the '*' as shown below:
+[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyFileVersion("1.0.0.0")]
+
+=== D:\wed photo sharing\project photo sharing\project photo sharing\Views\Account\Login.cshtml ===
+@{ Layout = null; }
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <title>Đăng nhập - PixelShare</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f6f8;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+
+        .login-box {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            border: 1px solid #ddd;
+            width: 300px;
+            text-align: center;
+        }
+
+        .form-control {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            box-sizing: border-box;
+        }
+
+        .btn-submit {
+            width: 100%;
+            padding: 10px;
+            background-color: #4a90e2;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        .error {
+            color: red;
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-box">
+        <h2 style="color: #4a90e2; margin-top: 0;">PixelShare</h2>
+        <p>Đăng nhập để xem ảnh</p>
+
+        @if (ViewBag.Error != null)
+        {<div class="error">@ViewBag.Error</div>}
+
+        <form action="@Url.Action("Login", "Account")" method="post">
+            <input type="email" name="email" class="form-control" placeholder="Nhập Email" required />
+            <input type="password" name="password" class="form-control" placeholder="Nhập mật khẩu" required />
+            <button type="submit" class="btn-submit">Đăng nhập</button>
+        </form>
+
+        <p style="font-size: 14px; margin-top: 20px;">Chưa có tài khoản? <a href="@Url.Action("Register", "Account")" style="color: #4a90e2;">Đăng ký ngay</a></p>
+    </div>
+</body>
+</html>
+=== D:\wed photo sharing\project photo sharing\project photo sharing\Views\Account\Register.cshtml ===
+@{ <a href="@Url.Action("Index", "Home")" style="background-color: #4a90e2; color: white; padding: 8px 15px; border-radius: 5px; text-decoration: none; font-weight: bold; display: inline-block;">
+
+</a> }
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <title>PixelShare</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f6f8;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+
+        .register-box {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            border: 1px solid #ddd;
+            width: 320px;
+            text-align: center;
+        }
+
+        .form-control {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            box-sizing: border-box;
+        }
+
+        .btn-submit {
+            width: 100%;
+            padding: 10px;
+            background-color: #4a90e2;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        .error {
+            color: red;
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="register-box">
+        <h2 style="color: #4a90e2; margin-top: 0;">PixelShare</h2>
+        <p>Tạo tài khoản mới</p>
+
+        @if (ViewBag.Error != null)
+        {<div class="error">@ViewBag.Error</div>}
+
+        <!-- Lưu ý: enctype="multipart/form-data" là bắt buộc để upload được file ảnh -->
+        <form action="@Url.Action("Register", "Account")" method="post" enctype="multipart/form-data">
+            <input type="text" name="Username" class="form-control" placeholder="Tên hiển thị (Ví dụ: Khánh Trình)" required />
+            <input type="email" name="Email" class="form-control" placeholder="Địa chỉ Email" required />
+            <input type="password" name="PasswordHash" class="form-control" placeholder="Mật khẩu" required />
+
+            <div style="text-align: left; font-size: 13px; font-weight: bold; margin-top: 10px;">Chọn ảnh đại diện:</div>
+            <input type="file" name="AvatarFile" class="form-control" accept="image/*" required />
+
+            <button type="submit" class="btn-submit">Đăng ký</button>
+        </form>
+
+        <p style="font-size: 14px; margin-top: 20px;">Đã có tài khoản? <a href="@Url.Action("Login", "Account")" style="color: #4a90e2;">Đăng nhập</a></p>
+    </div>
+</body>
+</html>
+=== D:\wed photo sharing\project photo sharing\project photo sharing\Views\Home\About.cshtml ===
+@{
+    ViewBag.Title = "About";
+}
+<main aria-labelledby="title">
+    <h2 id="title">@ViewBag.Title.</h2>
+    <h3>@ViewBag.Message</h3>
+
+    <p>Use this area to provide additional information.</p>
+</main>
+=== D:\wed photo sharing\project photo sharing\project photo sharing\Views\Home\Contact.cshtml ===
+@{
+    ViewBag.Title = "Contact";
+}
+<main aria-labelledby="title">
+    <h2 id="title">@ViewBag.Title.</h2>
+    <h3>@ViewBag.Message</h3>
+
+    <address>
+        One Microsoft Way<br />
+        Redmond, WA 98052-6399<br />
+        <abbr title="Phone">P:</abbr>
+        425.555.0100
+    </address>
+
+    <address>
+        <strong>Support:</strong>   <a href="mailto:Support@example.com">Support@example.com</a><br />
+        <strong>Marketing:</strong> <a href="mailto:Marketing@example.com">Marketing@example.com</a>
+    </address>
+</main>
+=== D:\wed photo sharing\project photo sharing\project photo sharing\Views\Home\Index.cshtml ===
+@model List<project_photo_sharing.Models.PhotoPost>
+@{
+    <a href="@Url.Action("Index", "Home")" style="background-color: #4a90e2; color: white; padding: 8px 15px; border-radius: 5px; text-decoration: none; font-weight: bold; display: inline-block;">
+
+    </a>
+    int currentUserId = Session["UserId"] != null ? (int)Session["UserId"] : 1;
+}
+
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PixelShare - Bảng tin</title>
+    <style>
+        /* ĐỊNH DẠNG TỔNG THỂ */
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f6f8;
+            margin: 0;
+            padding: 0;
+            color: #333;
+        }
+
+        /* THANH ĐIỀU HƯỚNG (NAVBAR) */
+        #top-banner {
+            background-color: white;
+            border-bottom: 1px solid #ddd;
+            padding: 10px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .logo-brand {
+            font-size: 24px;
+            font-weight: bold;
+            color: #4a90e2;
+            text-decoration: none;
+        }
+
+        .user-menu {
+            display: flex;
+            align-items: center;
+            gap: 15px; /* Tạo khoảng cách giữa các phần tử nằm ngang */
+        }
+
+        .btn-upload {
+            background-color: #4a90e2;
+            color: white;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        .avatar-small {
+            width: 35px;
+            height: 35px;
+            border-radius: 50%; /* Bo tròn ảnh */
+            object-fit: cover;
+        }
+
+        /* KHUNG CHỨA NỘI DUNG (MAIN CONTENT) */
+        .main-container {
+            max-width: 600px;
+            margin: 20px auto; /* Căn giữa màn hình */
+            padding: 0 15px;
+        }
+
+        /* BÀI VIẾT (POST) */
+        .post-card {
+            background-color: white;
+            border: 1px solid #ddd;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            overflow: hidden;
+        }
+
+        .post-header {
+            padding: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .post-user-info {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .post-username {
+            font-weight: bold;
+            font-size: 14px;
+        }
+
+        .post-image {
+            width: 100%;
+            display: block;
+        }
+
+        .post-body {
+            padding: 15px;
+        }
+
+        .btn-action {
+            padding: 5px 10px;
+            border-radius: 5px;
+            border: 1px solid #ccc;
+            background-color: #f9f9f9;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        /* HỘP THOẠI ĐĂNG ẢNH (MODAL) */
+        #upload-modal {
+            display: none; /* Ẩn đi mặc định, chỉ hiện khi bấm nút bằng JavaScript */
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(0,0,0,0.5);
+            z-index: 1000;
+        }
+
+        .modal-content {
+            background-color: white;
+            width: 400px;
+            margin: 100px auto;
+            padding: 20px;
+            border-radius: 10px;
+        }
+
+        .form-control {
+            width: 100%;
+            margin-bottom: 10px;
+            padding: 8px;
+            box-sizing: border-box;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- THANH ĐIỀU HƯỚNG -->
+    <div id="top-banner">
+        <a href="@Url.Action("Index", "Home")" class="logo-brand">PixelShare</a>
+        <div class="user-menu">
+            <button class="btn-upload" onclick="openModal()">+ Đăng ảnh</button>
+            <div style="display: flex; align-items: center; gap: 5px;">
+                <img src="@(Session["AvatarUrl"] ?? "/images/default-avatar.png")" class="avatar-small">
+                <span style="font-weight: bold;">@(Session["Username"] ?? "Guest")</span>
+            </div>
+            <a href="@Url.Action("Logout", "Account")" style="color: red; text-decoration: none; font-size: 14px;">Đăng xuất</a>
+        </div>
+    </div>
+    <!-- KHUNG CHỨA BÀI VIẾT -->
+    <div class="main-container">
+        @foreach (var post in Model)
+        {
+            <div class="post-card">
+                <div class="post-header">
+                    <div class="post-user-info">
+                        <img src="@post.Author.AvatarUrl" class="avatar-small">
+                        <div>
+                            <div class="post-username">@post.Author.Username</div>
+                            <div style="font-size: 12px; color: #888;">@post.CreatedAt.ToString("dd/MM/yyyy HH:mm")</div>
+                        </div>
+                    </div>
+
+                    @if (post.UserId == currentUserId)
+                    {
+                        <!-- Chỉ hiện nút Xóa nếu là ảnh của mình -->
+                        <form action="@Url.Action("DeletePost", "Home")" method="post" style="margin: 0;" onsubmit="return confirm('Bạn có muốn xóa?');">
+                            <input type="hidden" name="postId" value="@post.PostId" />
+                            <button type="submit" class="btn-action" style="color: red;">Xóa bài</button>
+                        </form>
+                    }
+                    else
+                    {
+                        <!-- Hiện nút Follow nếu là ảnh của người khác -->
+                        <form action="@Url.Action("ToggleFollow", "Home")" method="post" style="margin: 0;">
+                            <input type="hidden" name="targetUserId" value="@post.UserId" />
+                            <button type="submit" class="btn-action" style="@(post.IsFollowedByCurrentUser ? "color: gray;" : "color: blue;")">
+                                @(post.IsFollowedByCurrentUser ? "Đang theo dõi" : "+ Theo dõi")
+                            </button>
+                        </form>
+                    }
+                </div>
+                <img src="@post.ImageUrl" class="post-image">
+
+                <div class="post-body">
+                    <div style="margin-bottom: 15px;">
+                        <span class="post-username">@post.Author.Username</span>
+                        <span>@post.Caption</span>
+                    </div>
+
+                    <hr style="border: 0; border-top: 1px solid #eee; margin: 10px 0;">
+
+                    <!-- Khung Bình luận -->
+                    <div style="max-height: 100px; overflow-y: auto; margin-bottom: 10px; font-size: 14px;">
+                        @if (post.Comments != null)
+                        {
+                            foreach (var cmt in post.Comments)
+                            {
+                                <div style="margin-bottom: 5px;">
+                                    <b>@cmt.User.Username:</b> @cmt.Content
+                                </div>
+                            }
+                        }
+                    </div>
+
+                    <form action="@Url.Action("AddComment", "Home")" method="post" style="display: flex; gap: 5px;">
+                        <input type="hidden" name="postId" value="@post.PostId" />
+                        <input type="text" name="content" placeholder="Viết bình luận..." class="form-control" style="margin: 0; flex: 1;" required />
+                        <button type="submit" class="btn-action" style="background-color: white; border-color: transparent; color: blue; font-weight: bold;">Gửi</button>
+                    </form>
+                </div>
+            </div>
+        }
+    </div>
+
+    <!-- HỘP THOẠI ĐĂNG ẢNH TRÊN CÙNG 1 TRANG -->
+    <div id="upload-modal">
+        <div class="modal-content">
+            <h3 style="margin-top: 0;">Đăng ảnh mới</h3>
+            <form action="@Url.Action("UploadPhoto", "Home")" method="post" enctype="multipart/form-data">
+                <input type="file" name="imageFile" class="form-control" accept="image/*" required />
+                <textarea name="caption" rows="3" placeholder="Nhập chú thích (Caption)..." class="form-control" required></textarea>
+
+                <div style="text-align: right; margin-top: 10px;">
+                    <button type="button" class="btn-action" onclick="closeModal()">Hủy</button>
+                    <button type="submit" class="btn-upload">Tải lên</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- JAVASCRIPT CƠ BẢN -->
+    <script>
+                function openModal() {
+                    document.getElementById('upload-modal').style.display = 'block';
+                }
+                function closeModal() {
+                    document.getElementById('upload-modal').style.display = 'none';
+                }
+    </script>
+</body>
+</html>
+=== D:\wed photo sharing\project photo sharing\project photo sharing\Views\Home\MyProfile.cshtml ===
+@model IEnumerable<project_photo_sharing.Models.PhotoPost>
+@{ <a href="@Url.Action("Index", "Home")" style="background-color: #4a90e2; color: white; padding: 8px 15px; border-radius: 5px; text-decoration: none; font-weight: bold; display: inline-block;">
+
+</a> }
+
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="utf-8" />
+    <title>Trang cá nhân - PixelShare</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #fafafa;
+            margin: 0;
+            padding: 0;
+            color: #333;
+        }
+
+        /* NAVBAR GIỐNG TRANG CHỦ */
+        #top-banner {
+            background-color: white;
+            border-bottom: 1px solid #ddd;
+            padding: 10px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .logo-brand {
+            font-size: 24px;
+            font-weight: bold;
+            color: #4a90e2;
+            text-decoration: none;
+        }
+
+        .avatar-small {
+            width: 35px;
+            height: 35px;
+            border-radius: 50%;
+            object-fit: cover;
+        }
+
+        /* KHU VỰC HỒ SƠ */
+        .profile-container {
+            max-width: 800px;
+            margin: 30px auto;
+            padding: 0 20px;
+        }
+
+        .profile-header {
+            display: flex;
+            align-items: center;
+            gap: 40px;
+            margin-bottom: 40px;
+            padding-bottom: 30px;
+            border-bottom: 1px solid #ddd;
+        }
+
+        .profile-avatar {
+            width: 150px;
+            height: 150px;
+            border-radius: 50%;
+            object-fit: cover;
+            border: 2px solid #ddd;
+        }
+
+        .profile-info h2 {
+            margin: 0 0 15px 0;
+            font-size: 28px;
+            font-weight: normal;
+        }
+
+        .profile-stats {
+            display: flex;
+            gap: 20px;
+            font-size: 16px;
+        }
+
+            .profile-stats span {
+                font-weight: bold;
+            }
+
+        /* LƯỚI KHO ẢNH 3 CỘT */
+        .photo-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr); /* Tạo 3 cột đều nhau */
+            gap: 15px;
+        }
+
+        .photo-item {
+            aspect-ratio: 1 / 1; /* Ép ảnh thành hình vuông */
+            overflow: hidden;
+            background-color: #eee;
+        }
+
+            .photo-item img {
+                width: 100%;
+                height: 100%;
+                object-fit: cover; /* Cắt vừa khung vuông không bị méo */
+            }
+    </style>
+</head>
+<body>
+    <!-- THANH ĐIỀU HƯỚNG -->
+    <div id="top-banner">
+        <a href="@Url.Action("Index", "Home")" class="logo-brand">PixelShare</a>
+        <div style="display: flex; align-items: center; gap: 15px;">
+            <img src="@Session["AvatarUrl"]" class="avatar-small">
+            <span style="font-weight: bold;">@Session["Username"]</span>
+            <a href="@Url.Action("Logout", "Account")" style="color: red; text-decoration: none; font-size: 14px;">Đăng xuất</a>
+        </div>
+    </div>
+
+    <div class="profile-container">
+        <!-- HEADER THÔNG TIN NGƯỜI DÙNG -->
+        <div class="profile-header">
+            <img src="@Session["AvatarUrl"]" class="profile-avatar">
+            <div class="profile-info">
+                <h2>@Session["Username"]</h2>
+                <div class="profile-stats">
+                    <div><span>@ViewBag.PostCount</span> bài viết</div>
+                    <div><span>@ViewBag.FollowerCount</span> người theo dõi</div>
+                    <div>Đang theo dõi <span>@ViewBag.FollowingCount</span> người</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- KHO ẢNH DẠNG LƯỚI -->
+        <div class="photo-grid">
+            @foreach (var post in Model)
+            {
+                <div class="photo-item">
+                    <img src="@post.ImageUrl" alt="Photo" />
+                </div>
+            }
+        </div>
+    </div>
+</body>
+</html>
+=== D:\wed photo sharing\project photo sharing\project photo sharing\Views\Shared\Error.cshtml ===
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width" />
+    <title>Error</title>
+</head>
+<body>
+    <hgroup>
+        <h1>Error.</h1>
+        <h2>An error occurred while processing your request.</h2>
+    </hgroup>
+</body>
+</html>
+
+=== D:\wed photo sharing\project photo sharing\project photo sharing\Views\Shared\_Layout.cshtml ===
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>@ViewBag.Title - My ASP.NET Application</title>
+    @Styles.Render("~/Content/css")
+    @Scripts.Render("~/bundles/modernizr")
+</head>
+<body>
+    <nav class="navbar navbar-expand-sm navbar-toggleable-sm navbar-dark bg-dark">
+        <div class="container">
+           
+            <button type="button" class="navbar-toggler" data-bs-toggle="collapse" data-bs-target=".navbar-collapse" title="Toggle navigation" aria-controls="navbarSupportedContent"
+                    aria-expanded="false" aria-label="Toggle navigation">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            
+        </div>
+    </nav>
+    <div class="container body-content">
+        @RenderBody()
+        <hr />
+        <footer>
+            <p>&copy; @DateTime.Now.Year - My ASP.NET Application</p>
+        </footer>
+    </div>
+
+    @Scripts.Render("~/bundles/jquery")
+    @Scripts.Render("~/bundles/bootstrap")
+    @RenderSection("scripts", required: false)
+</body>
+</html>
+
+=== D:\wed photo sharing\project photo sharing\project photo sharing\Views\Web.config ===
+<?xml version="1.0"?>
+
+<configuration>
+  <configSections>
+    <sectionGroup name="system.web.webPages.razor" type="System.Web.WebPages.Razor.Configuration.RazorWebSectionGroup, System.Web.WebPages.Razor, Version=3.0.0.0, Culture=neutral, PublicKeyToken=31BF3856AD364E35">
+      <section name="host" type="System.Web.WebPages.Razor.Configuration.HostSection, System.Web.WebPages.Razor, Version=3.0.0.0, Culture=neutral, PublicKeyToken=31BF3856AD364E35" requirePermission="false" />
+      <section name="pages" type="System.Web.WebPages.Razor.Configuration.RazorPagesSection, System.Web.WebPages.Razor, Version=3.0.0.0, Culture=neutral, PublicKeyToken=31BF3856AD364E35" requirePermission="false" />
+    </sectionGroup>
+  </configSections>
+
+  <system.web.webPages.razor>
+    <host factoryType="System.Web.Mvc.MvcWebRazorHostFactory, System.Web.Mvc, Version=5.2.9.0, Culture=neutral, PublicKeyToken=31BF3856AD364E35" />
+    <pages pageBaseType="System.Web.Mvc.WebViewPage">
+      <namespaces>
+        <add namespace="System.Web.Mvc" />
+        <add namespace="System.Web.Mvc.Ajax" />
+        <add namespace="System.Web.Mvc.Html" />
+        <add namespace="System.Web.Optimization"/>
+        <add namespace="System.Web.Routing" />
+        <add namespace="project_photo_sharing" />
+      </namespaces>
+    </pages>
+  </system.web.webPages.razor>
+
+  <appSettings>
+    <add key="webpages:Enabled" value="false" />
+  </appSettings>
+
+  <system.webServer>
+    <handlers>
+      <remove name="BlockViewHandler"/>
+      <add name="BlockViewHandler" path="*" verb="*" preCondition="integratedMode" type="System.Web.HttpNotFoundHandler" />
+    </handlers>
+  </system.webServer>
+
+  <system.web>
+    <compilation>
+      <assemblies>
+        <add assembly="System.Web.Mvc, Version=5.2.9.0, Culture=neutral, PublicKeyToken=31BF3856AD364E35" />
+      </assemblies>
+    </compilation>
+  </system.web>
+</configuration>
+
+=== D:\wed photo sharing\project photo sharing\project photo sharing\Views\_ViewStart.cshtml ===
+@{
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+=== D:\wed photo sharing\project photo sharing\project photo sharing\Global.asax.cs ===
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Web;
+using System.Web.Mvc;
+using System.Web.Optimization;
+using System.Web.Routing;
+
+namespace project_photo_sharing
+{
+    public class MvcApplication : System.Web.HttpApplication
+    {
+        protected void Application_Start()
+        {
+            AreaRegistration.RegisterAllAreas();
+            FilterConfig.RegisterGlobalFilters(GlobalFilters.Filters);
+            RouteConfig.RegisterRoutes(RouteTable.Routes);
+            BundleConfig.RegisterBundles(BundleTable.Bundles);
+        }
+    }
+}
+
+=== D:\wed photo sharing\project photo sharing\project photo sharing\packages.config ===
+<?xml version="1.0" encoding="utf-8"?>
+<packages>
+  <package id="Antlr" version="3.5.0.2" targetFramework="net48" />
+  <package id="bootstrap" version="5.2.3" targetFramework="net48" />
+  <package id="EntityFramework" version="6.5.2" targetFramework="net48" />
+  <package id="jQuery" version="3.7.0" targetFramework="net48" />
+  <package id="jQuery.Validation" version="1.19.5" targetFramework="net48" />
+  <package id="Microsoft.AspNet.Mvc" version="5.2.9" targetFramework="net48" />
+  <package id="Microsoft.AspNet.Razor" version="3.2.9" targetFramework="net48" />
+  <package id="Microsoft.AspNet.Web.Optimization" version="1.1.3" targetFramework="net48" />
+  <package id="Microsoft.AspNet.WebPages" version="3.2.9" targetFramework="net48" />
+  <package id="Microsoft.CodeDom.Providers.DotNetCompilerPlatform" version="2.0.1" targetFramework="net48" />
+  <package id="Microsoft.jQuery.Unobtrusive.Validation" version="3.2.11" targetFramework="net48" />
+  <package id="Microsoft.Web.Infrastructure" version="2.0.0" targetFramework="net48" />
+  <package id="Modernizr" version="2.8.3" targetFramework="net48" />
+  <package id="Newtonsoft.Json" version="13.0.3" targetFramework="net48" />
+  <package id="WebGrease" version="1.6.0" targetFramework="net48" />
+</packages>
+=== D:\wed photo sharing\project photo sharing\project photo sharing\Web.config ===
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  For more information on how to configure your ASP.NET application, please visit
+  https://go.microsoft.com/fwlink/?LinkId=301880
+  -->
+<configuration>
+	<configSections>
+		<section name="entityFramework" type="System.Data.Entity.Internal.ConfigFile.EntityFrameworkSection, EntityFramework, Version=6.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089" requirePermission="false" />
+	</configSections>
+
+	<connectionStrings>
+		<add name="PhotoSharingDbContext" connectionString="Data Source=(localdb)\MSSQLLocalDB;Initial Catalog=PhotoSharingDB;Integrated Security=True;MultipleActiveResultSets=True" providerName="System.Data.SqlClient" />
+	<add name="masterEntities" connectionString="metadata=res://*/Models.Model1.csdl|res://*/Models.Model1.ssdl|res://*/Models.Model1.msl;provider=System.Data.SqlClient;provider connection string=&quot;data source=(localdb)\MSSQLLocalDB;integrated security=True;trustservercertificate=True;MultipleActiveResultSets=True;App=EntityFramework&quot;" providerName="System.Data.EntityClient" /></connectionStrings>
+  <appSettings>
+    <add key="webpages:Version" value="3.0.0.0" />
+    <add key="webpages:Enabled" value="false" />
+    <add key="ClientValidationEnabled" value="true" />
+    <add key="UnobtrusiveJavaScriptEnabled" value="true" />
+  </appSettings>
+  <system.web>
+    <compilation debug="true" targetFramework="4.8" />
+    <httpRuntime targetFramework="4.8" />
+  </system.web>
+  <runtime>
+    <assemblyBinding xmlns="urn:schemas-microsoft-com:asm.v1">
+      <dependentAssembly>
+        <assemblyIdentity name="Antlr3.Runtime" publicKeyToken="eb42632606e9261f" />
+        <bindingRedirect oldVersion="0.0.0.0-3.5.0.2" newVersion="3.5.0.2" />
+      </dependentAssembly>
+      <dependentAssembly>
+        <assemblyIdentity name="Microsoft.Web.Infrastructure" publicKeyToken="31bf3856ad364e35" />
+        <bindingRedirect oldVersion="0.0.0.0-2.0.0.0" newVersion="2.0.0.0" />
+      </dependentAssembly>
+      <dependentAssembly>
+        <assemblyIdentity name="Newtonsoft.Json" publicKeyToken="30ad4fe6b2a6aeed" />
+        <bindingRedirect oldVersion="0.0.0.0-13.0.0.0" newVersion="13.0.0.0" />
+      </dependentAssembly>
+      <dependentAssembly>
+        <assemblyIdentity name="System.Web.Optimization" publicKeyToken="31bf3856ad364e35" />
+        <bindingRedirect oldVersion="1.0.0.0-1.1.0.0" newVersion="1.1.0.0" />
+      </dependentAssembly>
+      <dependentAssembly>
+        <assemblyIdentity name="WebGrease" publicKeyToken="31bf3856ad364e35" />
+        <bindingRedirect oldVersion="0.0.0.0-1.6.5135.21930" newVersion="1.6.5135.21930" />
+      </dependentAssembly>
+      <dependentAssembly>
+        <assemblyIdentity name="System.Web.Helpers" publicKeyToken="31bf3856ad364e35" />
+        <bindingRedirect oldVersion="1.0.0.0-3.0.0.0" newVersion="3.0.0.0" />
+      </dependentAssembly>
+      <dependentAssembly>
+        <assemblyIdentity name="System.Web.WebPages" publicKeyToken="31bf3856ad364e35" />
+        <bindingRedirect oldVersion="1.0.0.0-3.0.0.0" newVersion="3.0.0.0" />
+      </dependentAssembly>
+      <dependentAssembly>
+        <assemblyIdentity name="System.Web.Mvc" publicKeyToken="31bf3856ad364e35" />
+        <bindingRedirect oldVersion="1.0.0.0-5.2.9.0" newVersion="5.2.9.0" />
+      </dependentAssembly>
+    </assemblyBinding>
+  </runtime>
+  <system.codedom>
+    <compilers>
+      <compiler language="c#;cs;csharp" extension=".cs" type="Microsoft.CodeDom.Providers.DotNetCompilerPlatform.CSharpCodeProvider, Microsoft.CodeDom.Providers.DotNetCompilerPlatform, Version=2.0.1.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35" warningLevel="4" compilerOptions="/langversion:default /nowarn:1659;1699;1701" />
+      <compiler language="vb;vbs;visualbasic;vbscript" extension=".vb" type="Microsoft.CodeDom.Providers.DotNetCompilerPlatform.VBCodeProvider, Microsoft.CodeDom.Providers.DotNetCompilerPlatform, Version=2.0.1.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35" warningLevel="4" compilerOptions="/langversion:default /nowarn:41008 /define:_MYTYPE=\&quot;Web\&quot; /optionInfer+" />
+    </compilers>
+  </system.codedom>
+  <entityFramework>
+    <providers>
+      <provider invariantName="System.Data.SqlClient" type="System.Data.Entity.SqlServer.SqlProviderServices, EntityFramework.SqlServer" />
+    </providers>
+  </entityFramework>
+</configuration>
+=== D:\wed photo sharing\project photo sharing\project photo sharing\Web.Debug.config ===
+<?xml version="1.0"?>
+
+<!-- For more information on using Web.config transformation visit https://go.microsoft.com/fwlink/?LinkId=301874 -->
+
+<configuration xmlns:xdt="http://schemas.microsoft.com/XML-Document-Transform">
+  <!--
+    In the example below, the "SetAttributes" transform will change the value of
+    "connectionString" to use "ReleaseSQLServer" only when the "Match" locator
+    finds an attribute "name" that has a value of "MyDB".
+
+    <connectionStrings>
+      <add name="MyDB"
+        connectionString="Data Source=ReleaseSQLServer;Initial Catalog=MyReleaseDB;Integrated Security=True"
+        xdt:Transform="SetAttributes" xdt:Locator="Match(name)"/>
+    </connectionStrings>
+  -->
+  <system.web>
+    <!--
+      In the example below, the "Replace" transform will replace the entire
+      <customErrors> section of your Web.config file.
+      Note that because there is only one customErrors section under the
+      <system.web> node, there is no need to use the "xdt:Locator" attribute.
+
+      <customErrors defaultRedirect="GenericError.htm"
+        mode="RemoteOnly" xdt:Transform="Replace">
+        <error statusCode="500" redirect="InternalError.htm"/>
+      </customErrors>
+    -->
+  </system.web>
+</configuration>
+
+=== D:\wed photo sharing\project photo sharing\project photo sharing\Web.Release.config ===
+<?xml version="1.0"?>
+
+<!-- For more information on using Web.config transformation visit https://go.microsoft.com/fwlink/?LinkId=301874 -->
+
+<configuration xmlns:xdt="http://schemas.microsoft.com/XML-Document-Transform">
+  <!--
+    In the example below, the "SetAttributes" transform will change the value of
+    "connectionString" to use "ReleaseSQLServer" only when the "Match" locator
+    finds an attribute "name" that has a value of "MyDB".
+
+    <connectionStrings>
+      <add name="MyDB"
+        connectionString="Data Source=ReleaseSQLServer;Initial Catalog=MyReleaseDB;Integrated Security=True"
+        xdt:Transform="SetAttributes" xdt:Locator="Match(name)"/>
+    </connectionStrings>
+  -->
+  <system.web>
+    <compilation xdt:Transform="RemoveAttributes(debug)" />
+    <!--
+      In the example below, the "Replace" transform will replace the entire
+      <customErrors> section of your Web.config file.
+      Note that because there is only one customErrors section under the
+      <system.web> node, there is no need to use the "xdt:Locator" attribute.
+
+      <customErrors defaultRedirect="GenericError.htm"
+        mode="RemoteOnly" xdt:Transform="Replace">
+        <error statusCode="500" redirect="InternalError.htm"/>
+      </customErrors>
+    -->
+  </system.web>
+</configuration>
+
